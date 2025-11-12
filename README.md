@@ -10,9 +10,10 @@ PostgreSQL database schema and migrations for the Astro telescope observation sy
 - [Directory Structure](#directory-structure)
 - [Quick Start](#quick-start)
   - [1. Prerequisites](#1-prerequisites)
-  - [2. Install Dependencies](#2-install-dependencies)
-  - [3. Configure Database Connection](#3-configure-database-connection)
-  - [4. Run Migrations](#4-run-migrations)
+  - [2. Start PostgreSQL](#2-start-postgresql)
+  - [3. Install Dependencies](#3-install-dependencies)
+  - [4. Configure Database Connection](#4-configure-database-connection)
+  - [5. Run Migrations](#5-run-migrations)
 - [Usage](#usage)
   - [Running Migrations](#running-migrations)
   - [Checking Status](#checking-status)
@@ -38,6 +39,13 @@ PostgreSQL database schema and migrations for the Astro telescope observation sy
   - ["Migration failed" Error](#migration-failed-error)
   - [Checksum Mismatch Warning](#checksum-mismatch-warning)
   - [Database Connection Errors](#database-connection-errors)
+- [Docker Setup](#docker-setup)
+  - [Basic Usage](#basic-usage)
+  - [Running pgAdmin (Optional)](#running-pgadmin-optional)
+  - [Docker Environment Variables](#docker-environment-variables)
+  - [Docker Compose Features](#docker-compose-features)
+  - [Using with Migration Tool](#using-with-migration-tool)
+  - [Troubleshooting Docker](#troubleshooting-docker)
 - [Integration with Backend](#integration-with-backend)
 - [Contributing](#contributing)
 
@@ -63,7 +71,9 @@ This repository contains SQL migration scripts and tools to create and maintain 
 database/
 ├── migrate.py              # Migration tool
 ├── requirements.txt        # Python dependencies (just psycopg2)
+├── docker-compose.yml      # PostgreSQL container setup
 ├── .env.example           # Environment variable template
+├── .dockerignore          # Docker build exclusions
 ├── migrations/            # Migration scripts (alphabetically ordered)
 │   └── v0.1.0_initial_schema.sql
 ├── afterMigrate/          # Scripts run after each migration
@@ -76,17 +86,46 @@ database/
 
 ### 1. Prerequisites
 
+**Option A: Local PostgreSQL**
 - Python 3.8+
 - PostgreSQL 12+
 - Access to create databases on PostgreSQL server
 
-### 2. Install Dependencies
+**Option B: Docker (Recommended)**
+- Python 3.8+
+- Docker and Docker Compose
+
+### 2. Start PostgreSQL
+
+**Option A: Using Docker Compose (Recommended)**
+
+```bash
+# Start PostgreSQL
+docker-compose up -d postgres
+
+# Check if it's running
+docker-compose ps
+
+# View logs
+docker-compose logs -f postgres
+
+# Stop when done
+docker-compose down
+```
+
+The database will be available at `localhost:5432` with credentials from `.env`.
+
+**Option B: Use existing PostgreSQL installation**
+
+Skip this step if you already have PostgreSQL running.
+
+### 3. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Configure Database Connection
+### 4. Configure Database Connection
 
 Copy `.env.example` to `.env` and update with your database credentials:
 
@@ -107,20 +146,20 @@ DB_PASSWORD=your_password_here
 # DEFAULT_TABLESPACE=pg_default
 ```
 
-### 4. Run Migrations
+### 5. Run Migrations
 
 ```bash
 # Preview migrations (dry-run)
-python migrate.py migrate --dry-run
+uv run migrate.py migrate --dry-run
 
 # Apply migrations
-python migrate.py migrate
+uv run migrate.py migrate
 
 # Check migration status
-python migrate.py info
+uv run migrate.py info
 
 # Load seed data (optional, for development)
-python migrate.py seed
+uv run migrate.py seed
 ```
 
 ## Usage
@@ -136,16 +175,16 @@ The migration tool will:
 
 ```bash
 # Run all pending migrations
-python migrate.py migrate
+uv run migrate.py migrate
 
 # Preview what would be applied
-python migrate.py migrate --dry-run
+uv run migrate.py migrate --dry-run
 ```
 
 ### Checking Status
 
 ```bash
-python migrate.py info
+uv run migrate.py info
 ```
 
 Output:
@@ -508,6 +547,132 @@ psql -h localhost -U postgres -d postgres
 # On Windows: Check Services
 # On Linux: systemctl status postgresql
 # On macOS: brew services list
+```
+
+## Docker Setup
+
+The project includes a Docker Compose configuration for easy PostgreSQL setup.
+
+### Basic Usage
+
+```bash
+# Start PostgreSQL
+docker-compose up -d postgres
+
+# Check status
+docker-compose ps
+
+# View logs
+docker-compose logs -f postgres
+
+# Stop database
+docker-compose down
+
+# Stop and remove volumes (WARNING: deletes all data)
+docker-compose down -v
+```
+
+### Running pgAdmin (Optional)
+
+pgAdmin is included for database management through a web UI:
+
+```bash
+# Start PostgreSQL and pgAdmin
+docker-compose --profile tools up -d
+
+# Access pgAdmin at http://localhost:5050
+# Default credentials: admin@astro.local / admin (from .env)
+```
+
+To connect to the database in pgAdmin:
+1. Open http://localhost:5050
+2. Add new server:
+   - **Name**: Astro DB
+   - **Host**: postgres (container name)
+   - **Port**: 5432
+   - **Username**: postgres (from .env)
+   - **Password**: your password (from .env)
+
+### Docker Environment Variables
+
+Configure in `.env`:
+
+```env
+# Database
+DB_HOST=localhost
+DB_PORT=5432
+DB_NAME=astro_telescope
+DB_USER=postgres
+DB_PASSWORD=your_secure_password
+
+# pgAdmin (optional)
+PGADMIN_EMAIL=admin@astro.local
+PGADMIN_PASSWORD=admin
+PGADMIN_PORT=5050
+```
+
+### Docker Compose Features
+
+- **PostgreSQL 16 Alpine** - Lightweight, fast startup
+- **Persistent volumes** - Data survives container restarts
+- **Health checks** - Ensures database is ready before dependent services start
+- **Custom network** - Isolated network for database services
+- **pgAdmin included** - Optional web-based database management
+- **Environment variable support** - Easy configuration
+
+### Using with Migration Tool
+
+The migration tool works seamlessly with Docker:
+
+```bash
+# Start database
+docker-compose up -d postgres
+
+# Wait for database to be ready (check health)
+docker-compose ps
+
+# Run migrations
+uv run migrate.py migrate
+
+# Load seed data
+uv run migrate.py seed
+
+# Check status
+uv run migrate.py info
+```
+
+### Troubleshooting Docker
+
+**Port already in use:**
+```bash
+# Change DB_PORT in .env to a different port (e.g., 5433)
+DB_PORT=5433
+
+# Restart containers
+docker-compose down
+docker-compose up -d
+```
+
+**Database not accessible:**
+```bash
+# Check if container is running
+docker-compose ps
+
+# Check logs for errors
+docker-compose logs postgres
+
+# Verify health status
+docker inspect astro-telescope-db | grep -A 10 Health
+```
+
+**Reset database completely:**
+```bash
+# Stop and remove everything including data
+docker-compose down -v
+
+# Start fresh
+docker-compose up -d postgres
+python migrate.py migrate
 ```
 
 ## Integration with Backend
