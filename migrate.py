@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 import psycopg2
+from dotenv import load_dotenv
 from psycopg2 import sql
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
@@ -207,14 +208,22 @@ class MigrationRunner:
             for row in results
         }
 
-    def get_pending_migrations(self) -> list[Migration]:
+    def get_pending_migrations(self, dry_run: bool = False) -> list[Migration]:
         """Get list of pending migrations in alphabetical order."""
         # Get all migration files sorted alphabetically
         migration_files = sorted(self.migrations_dir.glob("*.sql"))
         all_migrations = [Migration.from_file(f) for f in migration_files]
 
-        # Get applied migrations
-        applied = self.get_applied_migrations()
+        # Try to get applied migrations if we have a connection
+        try:
+            applied = self.get_applied_migrations()
+        except (psycopg2.Error, AttributeError):
+            # No connection or schema table doesn't exist
+            # In dry-run mode without a DB, show all as pending
+            if dry_run:
+                return all_migrations
+            # For non-dry-run, this shouldn't happen (we create schema table first)
+            return all_migrations
 
         # Filter to pending only
         pending = []
@@ -359,24 +368,35 @@ class MigrationRunner:
         if dry_run:
             print("   Mode: DRY RUN (no changes will be made)")
 
-        # Ensure database exists
-        db_created = self.ensure_database_exists()
-
-        # Connect to database
-        self.connect()
-
-        # Initialize schema table
+        # Ensure database exists (only if not dry-run)
         if not dry_run:
+            db_created = self.ensure_database_exists()
+            # Connect to database
+            self.connect()
+            # Initialize schema table
             self.initialize_schema_table()
+        else:
+            db_created = False
+            # Try to connect for dry-run (to check applied migrations if DB exists)
+            try:
+                self.connect()
+                # Don't create schema table in dry-run, just check if migrations exist
+            except psycopg2.Error:
+                # Database doesn't exist, that's fine for dry-run
+                print(
+                    "   ℹ️  Database doesn't exist yet (will be created on actual run)"
+                )
+                pass
 
         # Get pending migrations
-        pending = self.get_pending_migrations()
+        pending = self.get_pending_migrations(dry_run)
 
         if not pending:
             print("\n✨ No pending migrations. Database is up to date!")
-            if not db_created:
+            if not db_created and not dry_run:
                 self.run_after_migrate_scripts(dry_run)
-            self.close()
+            if self.conn:
+                self.close()
             return 0
 
         print(f"\n📋 Found {len(pending)} pending migration(s)")
@@ -396,7 +416,8 @@ class MigrationRunner:
             self.run_after_migrate_scripts(dry_run)
 
         print(f"\n✅ Successfully applied {applied_count} migration(s)")
-        self.close()
+        if self.conn:
+            self.close()
         return 0
 
     def seed(self, dry_run: bool = False) -> int:
@@ -477,9 +498,45 @@ class MigrationRunner:
         # Connect
         try:
             self.connect()
-            self.initialize_schema_table()
         except psycopg2.Error as e:
             print(f"   ❌ Cannot connect to database: {e}")
+            print("   Database doesn't exist yet. Run 'migrate' to create it.")
+            return
+
+        # Check if schema_migrations table exists
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = %s
+                )
+                """,
+                (self.SCHEMA_TABLE,),
+            )
+            table_exists = cursor.fetchone()[0]
+            cursor.close()
+
+            if not table_exists:
+                print("   ℹ️  No migrations have been run yet.")
+                print("   All migration files will be applied on first run.\n")
+
+                # Show all migrations as pending
+                migration_files = sorted(self.migrations_dir.glob("*.sql"))
+                all_migrations = [Migration.from_file(f) for f in migration_files]
+
+                print(f"⏳ Pending migrations: {len(all_migrations)}")
+                for migration in all_migrations:
+                    print(f"   ⏳ {migration.filename}: {migration.description}")
+
+                self.close()
+                return
+
+        except psycopg2.Error as e:
+            print(f"   ❌ Error checking schema table: {e}")
+            cursor.close()
+            self.close()
             return
 
         # Get applied migrations
@@ -503,6 +560,9 @@ class MigrationRunner:
 
 def main():
     """Main entry point."""
+    # Load environment variables from .env file
+    load_dotenv()
+
     parser = argparse.ArgumentParser(
         description="PostgreSQL migration tool with Flyway-like features",
         formatter_class=argparse.RawDescriptionHelpFormatter,
